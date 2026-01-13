@@ -1,0 +1,16 @@
+services:
+  snapper:
+    build: .
+    container_name: webcam-snapper
+    environment:
+      STREAM_URL: ${STREAM_URL}
+      WEBHOOK_URL: ${WEBHOOK_URL}
+      WEBHOOK_PAYLOAD: ${WEBHOOK_PAYLOAD}
+      OUTDIR: /data/images
+      INTERVAL: ${INTERVAL:-20}
+      RESTART_WINDOW: ${RESTART_WINDOW:-300}
+      RESTART_LIMIT: ${RESTART_LIMIT:-3}
+      QUALITY: ${QUALITY:-2}
+    volumes:
+      - ./images:/data/images
+
