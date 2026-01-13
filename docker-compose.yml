@@ -8,8 +8,9 @@ services:
       WEBHOOK_PAYLOAD: ${WEBHOOK_PAYLOAD}
       OUTDIR: /data/images
       INTERVAL: ${INTERVAL:-20}
-      RESTART_WINDOW: ${RESTART_WINDOW:-300}
-      RESTART_LIMIT: ${RESTART_LIMIT:-3}
+      RESTART_WINDOW: ${RESTART_WINDOW:-90}
+      RESTART_LIMIT: ${RESTART_LIMIT:-10}
+      MAX_RESTART_DELAY: ${MAX_RESTART_DELAY:-300}
       QUALITY: ${QUALITY:-2}
     volumes:
       - ./images:/data/images

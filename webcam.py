@@ -1,15 +1,15 @@
 
-import os, sys, time, signal, subprocess, json
+import os, sys, time, signal, subprocess
 from urllib.request import Request, urlopen
 
 STREAM_URL = os.environ.get("STREAM_URL")
 OUTDIR = os.environ.get("OUTDIR", "/data/images")
 INTERVAL = int(os.environ.get("INTERVAL", "20"))
-RESTART_WINDOW = int(os.environ.get("RESTART_WINDOW", "300"))
-RESTART_LIMIT = int(os.environ.get("RESTART_LIMIT", "3"))
+RESTART_WINDOW = int(os.environ.get("RESTART_WINDOW", "60"))
+RESTART_LIMIT = int(os.environ.get("RESTART_LIMIT", "10"))
+MAX_RESTART_DELAY = int(os.environ.get("MAX_RESTART_DELAY", "300"))
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 WEBHOOK_PAYLOAD = os.environ.get("WEBHOOK_PAYLOAD", "")
-
 QUALITY = os.environ.get("QUALITY", "2")
 
 if not STREAM_URL:
@@ -18,7 +18,9 @@ if not STREAM_URL:
 
 os.makedirs(OUTDIR, exist_ok=True)
 
-restarts = []
+lastStart = time.time()
+consecutiveRestarts = 0
+
 child = None
 terminate = False
 
@@ -71,24 +73,28 @@ def start_ffmpeg():
 while True:
     if terminate:
         break
+    lastStart = time.time()
     child = start_ffmpeg()
     try:
         rc = child.wait()
     except Exception:
         rc = child.poll()
 
-
     now = time.time()
-    restarts.append(now)
+    if now - lastStart > RESTART_WINDOW:
+        consecutiveRestarts = 0
+    else:
+        consecutiveRestarts += 1
 
-    # prune older entries
-    cutoff = now - RESTART_WINDOW
-    restarts = [t for t in restarts if t >= cutoff]
-    if len(restarts) >= RESTART_LIMIT:
+    if consecutiveRestarts >= RESTART_LIMIT:
         msg = WEBHOOK_PAYLOAD
         notify_webhook(WEBHOOK_URL, msg)
         sys.exit(0)
-    for _ in range(10):
+
+    delay = min((1.75 ** consecutiveRestarts), MAX_RESTART_DELAY)
+
+    end_time = time.time() + delay
+    while time.time() < end_time:
         if terminate:
             break
         time.sleep(0.2)
