@@ -1,0 +1,7 @@
+images/
+*.jpg
+*.jpeg
+*.png
+.git/
+.gitignore
+.idea/
