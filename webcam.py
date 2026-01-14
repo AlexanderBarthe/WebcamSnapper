@@ -8,6 +8,7 @@ INTERVAL = int(os.environ.get("INTERVAL", "20"))
 RESTART_WINDOW = int(os.environ.get("RESTART_WINDOW", "60"))
 RESTART_LIMIT = int(os.environ.get("RESTART_LIMIT", "10"))
 MAX_RESTART_DELAY = int(os.environ.get("MAX_RESTART_DELAY", "300"))
+UNRESPONSIVE_THRESHOLD_MULTIPLIER = int(os.environ.get("UNRESPONSIVE_THRESHOLD_MULTIPLIER", "6"))
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
 WEBHOOK_PAYLOAD = os.environ.get("WEBHOOK_PAYLOAD", "")
 QUALITY = os.environ.get("QUALITY", "2")
@@ -23,6 +24,8 @@ consecutiveRestarts = 0
 
 child = None
 terminate = False
+
+unresponsiveThreshold = UNRESPONSIVE_THRESHOLD_MULTIPLIER * INTERVAL
 
 def notify_webhook(webhook_url, payload):
     if not webhook_url:
@@ -59,6 +62,16 @@ def sigterm_handler(signum, frame):
 signal.signal(signal.SIGTERM, sigterm_handler)
 signal.signal(signal.SIGINT, sigterm_handler)
 
+def last_image_age():
+    try:
+        files = [os.path.join(OUTDIR, f) for f in os.listdir(OUTDIR)]
+        files = [f for f in files if os.path.isfile(f)]
+        if not files:
+            return None
+        return time.time() - max(os.path.getmtime(f) for f in files)
+    except Exception:
+        return None
+
 def start_ffmpeg():
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "warning",
@@ -75,10 +88,37 @@ while True:
         break
     lastStart = time.time()
     child = start_ffmpeg()
-    try:
-        rc = child.wait()
-    except Exception:
+
+    rc = None
+    check_sleep = 2
+    while True:
         rc = child.poll()
+        if rc is not None:            # ffmpeg is terminated
+            break
+
+        if terminate:                 # Signal received
+            try:
+                child.terminate()
+                time.sleep(2)
+                if child.poll() is None:
+                    child.kill()
+            except Exception:
+                pass
+            break
+
+        age = last_image_age()
+        if age is not None and age > unresponsiveThreshold:
+            # ffmpeg does no yield new images
+            try:
+                child.terminate()
+                time.sleep(2)
+                if child.poll() is None:
+                    child.kill()
+            except Exception:
+                pass
+            break
+
+        time.sleep(check_sleep)
 
     now = time.time()
     if now - lastStart > RESTART_WINDOW:
