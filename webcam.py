@@ -21,7 +21,6 @@ if not STREAM_URL:
 os.makedirs(OUTDIR, exist_ok=True)
 
 lastStart = time.time()
-progStartTime = time.time()
 consecutiveRestarts = 0
 
 child = None
@@ -145,7 +144,7 @@ while True:
             logging.debug("Last image age: %.1f s", age)
 
 
-        if age is not None and age > unresponsiveThreshold and time.time() > progStartTime + STARTUP_GRACE_PERIOD:
+        if age is not None and age > unresponsiveThreshold and time.time() > lastStart + STARTUP_GRACE_PERIOD:
             # ffmpeg does no yield new images
             logging.warning("No new images for %.1f s (threshold %s) — restarting ffmpeg", age, unresponsiveThreshold)
             try:
