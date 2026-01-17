@@ -5,14 +5,21 @@ from urllib.request import Request, urlopen
 STREAM_URL = os.environ.get("STREAM_URL")
 OUTDIR = os.environ.get("OUTDIR", "/data/images")
 INTERVAL = int(os.environ.get("INTERVAL", "20"))
-RESTART_WINDOW = int(os.environ.get("RESTART_WINDOW", "60"))
-RESTART_LIMIT = int(os.environ.get("RESTART_LIMIT", "10"))
-MAX_RESTART_DELAY = int(os.environ.get("MAX_RESTART_DELAY", "300"))
-UNRESPONSIVE_THRESHOLD_MULTIPLIER = int(os.environ.get("UNRESPONSIVE_THRESHOLD_MULTIPLIER", "6"))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
-WEBHOOK_PAYLOAD = os.environ.get("WEBHOOK_PAYLOAD", "")
 QUALITY = os.environ.get("QUALITY", "2")
-STARTUP_GRACE_PERIOD=INTERVAL*4
+
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
+WEBHOOK_TERM_MSG = os.environ.get("WEBHOOK_TERM_MSG", "")
+WEBHOOK_WARN_MSG=os.environ.get("WEBHOOK_WARN_MSG", "")
+WEBHOOK_RECOV_MSG=os.environ.get("WEBHOOK_RECOV_MSG", "")
+
+RESTART_WARN_THRESHOLD=int(os.environ.get("RESTART_WARN_THRESHOLD", "10"))
+RESTART_LIMIT = int(os.environ.get("RESTART_LIMIT", "200"))
+
+MAX_RESTART_DELAY = int(os.environ.get("MAX_RESTART_DELAY", "300"))
+PROC_HEALTHY_START_MULTIPLIER = int(os.environ.get("PROC_HEALTHY_STARTUP_MULTIPLIER", "4"))
+PROC_HEALTHY_START_THRESHOLD = INTERVAL * PROC_HEALTHY_START_MULTIPLIER
+PROC_UNRESPONSIVE_MULTIPLIER = int(os.environ.get("PROC_UNRESPONSIVE_MULTIPLIER", "6"))
+PROC_UNRESPONSIVE_THRESHOLD = INTERVAL * PROC_UNRESPONSIVE_MULTIPLIER
 
 if not STREAM_URL:
     print("ERROR: STREAM_URL must be set", file=sys.stderr)
@@ -21,18 +28,17 @@ if not STREAM_URL:
 os.makedirs(OUTDIR, exist_ok=True)
 
 lastStart = time.time()
-consecutiveRestarts = 0
+consecutiveFailures = 0
 
 child = None
 terminate = False
 
-unresponsiveThreshold = UNRESPONSIVE_THRESHOLD_MULTIPLIER * INTERVAL
+logger = logging.getLogger("webcam_snapper")
+logger.setLevel(logging.INFO)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+logger.addHandler(handler)
 
 def notify_webhook(webhook_url, payload):
     if not webhook_url:
@@ -108,73 +114,95 @@ def start_ffmpeg():
         bufsize=1,
         universal_newlines=True
     )
-    stream_process_output(proc, logging)
+    stream_process_output(proc, logger)
     return proc
 
+def process_healthy():
+
+    # Check termination
+    rc = child.poll()
+    if rc is not None:
+        logger.warning("ffmpeg exited with returncode=%s", rc)
+        return False
+
+    # Check for unresponsiveness
+    age = last_image_age()
+    if age is None:
+        logger.debug("No images yet in OUTDIR (%s)", OUTDIR)
+    else:
+        logger.debug("Last image age: %.1f s", age)
+
+    if age is not None and age > PROC_UNRESPONSIVE_THRESHOLD and time.time() > lastStart + PROC_HEALTHY_START_THRESHOLD:
+        logger.warning("No new images for %.1f s (threshold %s)", age, PROC_UNRESPONSIVE_THRESHOLD)
+        return False
+
+    return True
+
+
+
 while True:
-    if terminate:
-        logging.info("Terminate flag set — exiting main loop")
-        break
+
     lastStart = time.time()
     child = start_ffmpeg()
 
-    rc = None
-    check_sleep = 2
+    # while process healthy
     while True:
-        rc = child.poll()
-        if rc is not None:            # ffmpeg is terminated
-            logging.warning("ffmpeg exited with returncode=%s", rc)
-            break
 
-        if terminate:                 # Signal received
-            logging.info("Termination requested — stopping child")
+        # Stop if terminated
+        if terminate:
+            logger.info("Termination requested - stopping")
             try:
                 child.terminate()
                 time.sleep(2)
                 if child.poll() is None:
                     child.kill()
             except Exception:
-                logging.exception("Error while terminating child")
+                logger.exception("Error while terminating child")
             break
 
-        age = last_image_age()
-        if age is None:
-            logging.debug("No images yet in OUTDIR (%s)", OUTDIR)
-        else:
-            logging.debug("Last image age: %.1f s", age)
-
-
-        if age is not None and age > unresponsiveThreshold and time.time() > lastStart + STARTUP_GRACE_PERIOD:
-            # ffmpeg does no yield new images
-            logging.warning("No new images for %.1f s (threshold %s) — restarting ffmpeg", age, unresponsiveThreshold)
+        # Stop if unhealthy
+        if not process_healthy():
             try:
                 child.terminate()
                 time.sleep(2)
                 if child.poll() is None:
                     child.kill()
             except Exception:
-                logging.exception("Error while killing unresponsive child")
+                logger.exception("Error while killing unresponsive child")
             break
 
-        time.sleep(check_sleep)
+        # Reset consecutive failures
+        if time.time() > lastStart + PROC_HEALTHY_START_THRESHOLD:
+            if consecutiveFailures >= RESTART_WARN_THRESHOLD:
+                # Recovered from failure
+                msg = WEBHOOK_RECOV_MSG
+                notify_webhook(WEBHOOK_URL, msg)
 
-    now = time.time()
-    if now - lastStart > RESTART_WINDOW:
-        logging.info("Stable run (%.1fs) — reset consecutiveRestarts", now - lastStart)
-        consecutiveRestarts = 0
-    else:
-        consecutiveRestarts += 1
-        logging.info("ffmpeg restarted quickly — consecutiveRestarts=%d", consecutiveRestarts)
+            consecutiveFailures = 0
 
-    if consecutiveRestarts >= RESTART_LIMIT:
-        logging.error("Reached RESTART_LIMIT (%d). Sending webhook and exiting.", RESTART_LIMIT)
-        msg = WEBHOOK_PAYLOAD
+        time.sleep(1)
+
+    if terminate:
+        break
+
+    consecutiveFailures += 1
+    logger.warning("ffmpeg failed. Consecutive failures: %d", consecutiveFailures)
+
+    if consecutiveFailures == RESTART_WARN_THRESHOLD:
+        logger.info("Notifying webhook about issues")
+        msg = WEBHOOK_WARN_MSG
+        notify_webhook(WEBHOOK_URL, msg)
+
+    if consecutiveFailures >= RESTART_LIMIT:
+        logger.error("Reached RESTART_LIMIT (%d). Sending webhook and exiting.", RESTART_LIMIT)
+        msg = WEBHOOK_TERM_MSG
         notify_webhook(WEBHOOK_URL, msg)
         sys.exit(0)
 
-    delay = min((1.75 ** consecutiveRestarts), MAX_RESTART_DELAY)
+    # Delaying next start
+    delay = min((1.75 ** consecutiveFailures), MAX_RESTART_DELAY)
 
-    logging.info("Sleeping %.1f s before next start", delay)
+    logger.warning("Sleeping %.1f s before next start", delay)
     end_time = time.time() + delay
     while time.time() < end_time:
         if terminate:
