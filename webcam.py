@@ -2,9 +2,16 @@
 import os, sys, time, signal, subprocess, logging, threading
 from urllib.request import Request, urlopen
 
+def get_env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except (ValueError, TypeError):
+        return default
+
+
 STREAM_URL = os.environ.get("STREAM_URL")
 OUTDIR = os.environ.get("OUTDIR", "/data/images")
-INTERVAL = int(os.environ.get("INTERVAL", "20"))
+INTERVAL = get_env_int("INTERVAL", "20")
 QUALITY = os.environ.get("QUALITY", "2")
 
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")
@@ -12,13 +19,13 @@ WEBHOOK_TERM_MSG = os.environ.get("WEBHOOK_TERM_MSG", "")
 WEBHOOK_WARN_MSG=os.environ.get("WEBHOOK_WARN_MSG", "")
 WEBHOOK_RECOV_MSG=os.environ.get("WEBHOOK_RECOV_MSG", "")
 
-RESTART_WARN_THRESHOLD=int(os.environ.get("RESTART_WARN_THRESHOLD", "10"))
-RESTART_LIMIT = int(os.environ.get("RESTART_LIMIT", "200"))
+RESTART_WARN_THRESHOLD=get_env_int("RESTART_WARN_THRESHOLD", "10")
+RESTART_LIMIT = get_env_int("RESTART_LIMIT", "200")
 
-MAX_RESTART_DELAY = int(os.environ.get("MAX_RESTART_DELAY", "300"))
-PROC_HEALTHY_START_MULTIPLIER = int(os.environ.get("PROC_HEALTHY_STARTUP_MULTIPLIER", "4"))
+MAX_RESTART_DELAY = get_env_int("MAX_RESTART_DELAY", "300")
+PROC_HEALTHY_START_MULTIPLIER = get_env_int("PROC_HEALTHY_STARTUP_MULTIPLIER", "4")
 PROC_HEALTHY_START_THRESHOLD = INTERVAL * PROC_HEALTHY_START_MULTIPLIER
-PROC_UNRESPONSIVE_MULTIPLIER = int(os.environ.get("PROC_UNRESPONSIVE_MULTIPLIER", "6"))
+PROC_UNRESPONSIVE_MULTIPLIER = get_env_int("PROC_UNRESPONSIVE_MULTIPLIER", "6")
 PROC_UNRESPONSIVE_THRESHOLD = INTERVAL * PROC_UNRESPONSIVE_MULTIPLIER
 
 if not STREAM_URL:
@@ -40,6 +47,7 @@ handler = logging.StreamHandler(sys.stdout)
 handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 logger.addHandler(handler)
 
+
 def notify_webhook(webhook_url, payload):
     if not webhook_url:
         return
@@ -56,8 +64,9 @@ def notify_webhook(webhook_url, payload):
                             "User-Agent": "webcam-snapper/1.0"})
     try:
         urlopen(req, timeout=5)
-    except Exception:
-        pass
+    except Exception as e:
+        print(e)
+
 
 # handle termination
 def sigterm_handler(signum, frame):
@@ -72,8 +81,6 @@ def sigterm_handler(signum, frame):
         except Exception:
             pass
 
-signal.signal(signal.SIGTERM, sigterm_handler)
-signal.signal(signal.SIGINT, sigterm_handler)
 
 def last_image_age():
     try:
@@ -85,7 +92,8 @@ def last_image_age():
     except Exception:
         return None
 
-def stream_process_output(proc, logger):
+
+def stream_process_output(proc):
     def _reader(pipe):
         try:
             for line in iter(pipe.readline, ''):
@@ -97,6 +105,7 @@ def stream_process_output(proc, logger):
     t = threading.Thread(target=_reader, args=(proc.stdout,), daemon=True)
     t.start()
     return t
+
 
 def start_ffmpeg():
     cmd = [
@@ -114,8 +123,9 @@ def start_ffmpeg():
         bufsize=1,
         universal_newlines=True
     )
-    stream_process_output(proc, logger)
+    stream_process_output(proc)
     return proc
+
 
 def process_healthy():
 
@@ -139,6 +149,8 @@ def process_healthy():
     return True
 
 
+signal.signal(signal.SIGTERM, sigterm_handler)
+signal.signal(signal.SIGINT, sigterm_handler)
 
 while True:
 

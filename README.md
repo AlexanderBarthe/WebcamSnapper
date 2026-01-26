@@ -11,6 +11,8 @@ Use `git clone https://github.com/AlexanderBarthe/WebcamSnapper` in the desired 
 
 ### Edit the .env file
 
+First rename `.env.example` to `.env`.
+
 In the .env file replace `YOUR_M3U8_SOURCE_URL` with the URL of the M3U8 stream. This is mandatory.
 You can also add your webhook url and payload and edit some other variables. Note, that the quality of the images get better, the smaller the `QUALITY` value is.
 

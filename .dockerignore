@@ -5,3 +5,4 @@ images/
 .git/
 .gitignore
 .idea/
+.env.example
